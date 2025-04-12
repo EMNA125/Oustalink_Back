@@ -87,5 +87,35 @@ async function refreshToken(req, res) {
   }
 }
 
+async function resetPasswordController(req, res) {
+  try {
+    const { email } = req.body;
 
-module.exports = { signUp, signIn ,refreshToken};
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    const result = await AuthService.resetPasswordForEmail(email);
+
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ message: error.message });
+  }
+}
+async function updatePasswordController(req, res) {
+  const { resetToken, newPassword } = req.body;
+
+  try {
+    const result = await AuthService.updatePassword(resetToken, newPassword);
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error('Error updating password in controller:', err.message);
+    return res.status(500).json({ message: err.message });
+  }
+}
+
+
+
+
+module.exports = { signUp, signIn ,refreshToken,resetPasswordController,updatePasswordController};

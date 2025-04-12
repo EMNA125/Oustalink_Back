@@ -162,5 +162,57 @@ async function rollbackSignup(userId, authUserId) {
     console.error('Rollback error:', err);
   }
 }
+// Reset Password Function
+async function resetPasswordForEmail(email) {
+  // Check if user exists
+  const { data: user, error: fetchError } = await supabase
+    .from('users') // Your table name
+    .select('*')
+    .eq('email', email)
+    .single();
 
-module.exports = { signUp, signIn };
+  if (fetchError || !user) {
+    throw new Error('Email does not exist');
+  }
+
+  // Send Reset Password Email
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: 'http://localhost:4200/reset-password', // Your reset page
+  });
+
+  if (error) {
+    console.error('Error sending reset password email:', error);
+    throw error;
+  }
+
+  return { message: 'Password reset email sent successfully' };
+}
+
+
+async function updatePassword(resetToken, newPassword) {
+  if (!resetToken || !newPassword) {
+    throw new Error('Reset token and new password are required');
+  }
+
+  // Step 1: Get the user from the access token
+  const { data: user, error: userError } = await supabaseAdmin.auth.getUser(resetToken);
+
+  if (userError) {
+    console.error('Error fetching user from token:', userError.message);
+    throw userError;
+  }
+
+  // Step 2: Use admin API to update password
+  const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(user.user.id, {
+    password: newPassword,
+  });
+
+  if (updateError) {
+    console.error('Error updating password:', updateError.message);
+    throw updateError;
+  }
+
+  return { message: 'Password updated successfully' };
+}
+
+module.exports = { signUp, signIn ,resetPasswordForEmail,updatePassword};
