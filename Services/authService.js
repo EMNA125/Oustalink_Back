@@ -2,6 +2,12 @@ const { supabase, supabaseAdmin } = require('../config/db');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 
+const { OAuth2Client } = require('google-auth-library');
+
+const googleClientId = process.env.GOOGLE_CLIENT_ID;
+const client = new OAuth2Client(googleClientId);
+
+
 async function signUp(email, password, role, additionalDetails) {
   console.log('AuthService - Email:', email);
   let authUserId;
@@ -214,5 +220,223 @@ async function updatePassword(resetToken, newPassword) {
 
   return { message: 'Password updated successfully' };
 }
+async function sendOtpToPhone(phone) {
+  // Basic E.164 phone number format validation (e.g. +1234567890)
+  const phoneRegex = /^\+[1-9]\d{1,14}$/;
+  if (!phoneRegex.test(phone)) {
+    throw new Error('Invalid phone number format. It should be in E.164 format.');
+  }
 
-module.exports = { signUp, signIn ,resetPasswordForEmail,updatePassword};
+  // Optional: Check if the phone number exists in your users table
+  const { data: user, error: fetchError } = await supabase
+    .from('users')
+    .select('*')
+    .contains('phone', [phone])
+    .single();
+
+  if (fetchError || !user) {
+    throw new Error('Phone number not registered.');
+  }
+
+  // Send OTP
+  const { data, error } = await supabase.auth.signInWithOtp({ phone });
+
+  if (error) {
+    console.error('Error sending OTP:', error);
+    throw error;
+  }
+
+  return { message: 'OTP sent successfully', data };
+}
+async function verifyOtpToken(phone, token) {
+  const { data, error } = await supabase.auth.verifyOtp({
+    phone,
+    token,
+    type: 'sms',
+  });
+
+  if (error) {
+    console.error('OTP verification failed:', error);
+    throw error;
+  }
+
+  return {
+    session: data.session,
+    user: data.user,
+    message: 'OTP verified successfully'
+  };
+}
+// ✅ Send only the 6-digit OTP code (no magic link access token)
+async function sendOtpToEmail(email) {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    throw new Error('Invalid email address format.');
+  }
+
+  const { data: user, error: fetchError } = await supabase
+    .from('users')
+    .select('*')
+    .eq('email', email)
+    .single();
+
+  if (fetchError || !user) {
+    throw new Error('Email not registered.');
+  }
+
+  const { data, error } = await supabase.auth.signInWithOtp({
+    email,
+    options: {
+      shouldCreateUser: false, // Prevents new user creation
+      // Don't use emailRedirectTo here — not needed for code-only
+    }
+  });
+
+  if (error) {
+    console.error('Error sending OTP:', error);
+    throw error;
+  }
+
+  return { message: 'OTP code sent to email', data };
+}
+
+// async function sendOtpToEmail1(email) {
+//   // Basic email format check
+//   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+//   if (!emailRegex.test(email)) {
+//     throw new Error('Invalid email address format.');
+//   }
+
+//   // Optional: Check if the email exists in your users table
+//   const { data: user, error: fetchError } = await supabase
+//     .from('users')
+//     .select('*')
+//     .eq('email', email)
+//     .single();
+
+//   if (fetchError || !user) {
+//     throw new Error('Email not registered.');
+//   }
+
+//   // Send OTP code to email
+//   const { data, error } = await supabase.auth.api.sendOtp({
+//     email,
+//     type: 'email', // Indicate that it's an email-based OTP
+//     emailRedirectTo: `https://your-frontend.com/verify-otp?email=${encodeURIComponent(email)}`
+//   });
+
+//   if (error) {
+//     console.error('Error sending OTP:', error);
+//     throw error;
+//   }
+
+//   return { message: 'OTP email sent successfully', data };
+// }
+
+// ✅ Verifies code from email and signs user in
+async function verifyOtpCode(email, token) {
+  const { data, error } = await supabase.auth.verifyOtp({
+    email,
+    token,
+    type: 'email'  // 👈 This ensures it's OTP-based, not magic link
+  });
+
+  if (error) {
+    console.error('OTP verification failed:', error.message);
+    throw new Error('Invalid or expired OTP code.');
+  }
+
+  return {
+    message: 'OTP verified successfully',
+    session: data.session,
+    user: data.user
+  };
+}
+
+async function verifyGoogleIdToken(idToken) {
+  try {
+    const ticket = await client.verifyIdToken({
+      idToken,
+      audience: googleClientId,
+    });
+    const payload = ticket.getPayload();
+    return payload;
+  } catch (error) {
+    console.error('Error verifying Google ID token:', error);
+    return null;
+  }
+}
+
+async function findOrCreateUserByGoogleProfile(googleProfile) {
+  const { email: googleEmail, name, sub: googleId } = googleProfile;
+  const normalizedGoogleEmail = googleEmail ? googleEmail.trim().toLowerCase() : null;
+
+  if (!normalizedGoogleEmail) {
+    console.error('Error: Google profile does not contain a valid email.');
+    throw new Error('Invalid Google email.');
+  }
+
+  const { data: existingUser, error: fetchError } = await supabaseAdmin
+    .from('auth.users')
+    .select('id')
+    .eq('email', normalizedGoogleEmail) // Using normalized email
+    .single();
+
+  if (fetchError) {
+    console.error('Error fetching user:', fetchError);
+    throw fetchError;
+  }
+
+  if (existingUser) {
+    return existingUser.id;
+  } else {
+    const { data: newUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
+      email: normalizedGoogleEmail, // Using normalized email for creation
+      user_metadata: { full_name: name, google_id: googleId },
+    });
+    if (createError) {
+      console.error('Error creating user:', createError);
+      throw createError;
+    }
+    return newUser.id;
+  }
+}
+
+async function createSupabaseSession(userId) {
+  const { data: { session }, error } = await supabaseAdmin.auth.admin.createSession({
+    uid: userId,
+  });
+  if (error) {
+    console.error('Error creating Supabase session:', error);
+    throw error;
+  }
+  return session;
+}
+const initiateGoogleOAuth = async (origin) => {
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo: `${origin}/auth/callback/google`,
+    },
+  });
+
+  if (error) {
+    console.error('Error initiating Google OAuth:', error);
+    throw new Error('Failed to initiate Google OAuth');
+  }
+
+  return data.url;
+};
+
+const exchangeCodeForSession = async (code) => {
+  const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+
+  if (error) {
+    console.error('Error exchanging code for session:', error);
+    throw new Error('Failed to exchange code for session');
+  }
+
+  return data;
+};
+module.exports = { signUp, signIn ,resetPasswordForEmail,updatePassword,
+  sendOtpToPhone,verifyOtpToken,sendOtpToEmail,verifyOtpCode,findOrCreateUserByGoogleProfile,
+  verifyGoogleIdToken,createSupabaseSession,initiateGoogleOAuth,exchangeCodeForSession};
